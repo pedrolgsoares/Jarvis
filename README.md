@@ -258,10 +258,10 @@ O painel **ElevenLabs** na barra lateral mostra o status da API e quantos crédi
 - [ ] O painel de créditos, depois de ativar a permissão `user_read` na chave
 - [ ] A cadeia completa com o modo `api` (só foi testada com o Ollama)
 
-## 11. O que podemos melhorar
+## 11. O que pode ser melhorado
 
 **Prioridade alta**
-- [ ] Iniciar o repositório git (`git init`) e conferir com `git status` que o `.env` não aparece
+- [x] Iniciar o repositório git (`git init`) e conferir com `git status` que o `.env` não aparece
 - [ ] Testes automáticos para as partes sem rede: `limpar_para_fala`, `_cidade_da_pergunta`, detecção de clima e de busca
 - [ ] Ampliar os gatilhos da busca na web. Hoje "quem ganhou o jogo ontem?" ainda vai para o modelo, que não sabe
 - [ ] Persistir o histórico da conversa entre sessões
