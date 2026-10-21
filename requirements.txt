@@ -1,0 +1,20 @@
+# Dependências do Jarvis (testado com Python 3.13 no Windows)
+#   pip install -r requirements.txt
+
+# cérebro: busca TF-IDF na base e nas anotações (RAG)
+scikit-learn==1.9.1
+
+# configuração: lê o .env
+python-dotenv==1.2.4
+
+# interface gráfica
+streamlit==1.66.0
+
+# web: busca no DuckDuckGo (o clima usa só a biblioteca padrão)
+ddgs==9.16.0
+
+# voz: Edge (neural), ElevenLabs e voz do Windows
+edge-tts==7.3.1
+pygame-ce==2.5.8      # toca os MP3 (também usado pela ElevenLabs)
+pyttsx3==2.99         # voz do Windows (offline)
+comtypes==1.4.17      # SAPI5 do Windows, usado pelo pyttsx3

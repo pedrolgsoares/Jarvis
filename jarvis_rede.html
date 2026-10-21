@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --fundo-borda: #05121a;
+    --fundo-centro: #0c2633;
+    --texto: #b7ccd8;
+    --botao: #8fe3f2;
+  }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  #palco { position: relative; height: 100%; border-radius: 20px; overflow: hidden;
+    background: radial-gradient(120% 95% at 50% 45%, var(--fundo-centro), var(--fundo-borda)); }
+  canvas { display: block; width: 100%; height: 100%; }
+  #estado { position: absolute; left: 22px; bottom: 16px; margin: 0;
+    color: var(--texto); font-size: 14px; letter-spacing: .01em; }
+  #ouvir { position: absolute; right: 18px; bottom: 12px; display: none;
+    padding: 8px 16px; border: 1px solid var(--botao); border-radius: 999px;
+    background: transparent; color: var(--botao); font: inherit; font-size: 14px; cursor: pointer; }
+  #ouvir:hover { background: rgba(143, 227, 242, .12); }
+  #ouvir:focus-visible { outline: 2px solid var(--botao); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<div id="palco">
+  <canvas id="rede" aria-hidden="true"></canvas>
+  <p id="estado" role="status"></p>
+  <button id="ouvir" type="button">Ouvir resposta</button>
+</div>
+
+<script>
+const CONFIG = __CONFIG__;  // {estado: "ocioso"|"pensando"|"falando", audio: base64|null}
+
+// ---- aparência por estado -------------------------------------------------
+const CAMADAS = [4, 7, 9, 7, 4];
+const CORES = { ocioso: [96, 136, 166], pensando: [232, 163, 61], falando: [143, 227, 242] };
+const ROTULOS = { ocioso: "Aguardando sua pergunta", pensando: "Pensando…", falando: "Falando" };
+const DISPAROS_POR_SEG = { ocioso: 1.2, pensando: 16, falando: 4 };   // falando soma o volume
+const CHANCE_PROPAGAR = { ocioso: 0.45, pensando: 0.85, falando: 0.6 };
+const REDUZIR = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const canvas = document.getElementById("rede");
+const ctx = canvas.getContext("2d");
+const rotulo = document.getElementById("estado");
+const botao = document.getElementById("ouvir");
+
+let largura = 0, altura = 0, nos = [], ligacoes = [], pulsos = [];
+let estado = CONFIG.estado, nivel = 0, acumulador = 0, tempo = 0;
+const cor = CORES[estado].slice();
+
+function mudarEstado(novo, texto) {
+  estado = novo;
+  rotulo.textContent = texto || ROTULOS[novo];
+}
+
+// ---- geometria da rede ----------------------------------------------------
+function montar() {
+  const dpr = window.devicePixelRatio || 1;
+  largura = canvas.clientWidth; altura = canvas.clientHeight;
+  canvas.width = largura * dpr; canvas.height = altura * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  nos = []; ligacoes = []; pulsos = [];
+  const maior = Math.max(...CAMADAS);
+  const margemX = largura * 0.1;
+  const passoY = (altura * 0.72) / (maior - 1);
+  CAMADAS.forEach((qtd, c) => {
+    const x = margemX + (largura - 2 * margemX) * c / (CAMADAS.length - 1);
+    for (let i = 0; i < qtd; i++) {
+      const y = altura * 0.46 + (i - (qtd - 1) / 2) * passoY;
+      nos.push({ x, y, camada: c, ativacao: 0, fase: Math.random() * Math.PI * 2, saidas: [] });
+    }
+  });
+  for (const a of nos) for (const b of nos)
+    if (b.camada === a.camada + 1) { const l = { a, b }; ligacoes.push(l); a.saidas.push(l); }
+}
+
+function disparar(no) {
+  if (!no.saidas.length) return;
+  const lig = no.saidas[Math.floor(Math.random() * no.saidas.length)];
+  pulsos.push({ lig, t: 0, vel: 0.7 + Math.random() * 0.9 });
+}
+
+// ---- áudio: o volume real da fala comanda a rede ---------------------------
+let audio = null, contexto = null, analisador = null, dados = null;
+
+function prepararAudio() {
+  if (contexto) return;
+  contexto = new (window.AudioContext || window.webkitAudioContext)();
+  const fonte = contexto.createMediaElementSource(audio);  // só pode ser criado uma vez
+  analisador = contexto.createAnalyser();
+  analisador.fftSize = 512;
+  analisador.smoothingTimeConstant = 0.6;
+  dados = new Uint8Array(analisador.frequencyBinCount);
+  fonte.connect(analisador);
+  analisador.connect(contexto.destination);
+}
+
+async function tocar() {
+  try {
+    prepararAudio();
+    await contexto.resume();
+    if (contexto.state !== "running") throw new Error("áudio bloqueado");
+    await audio.play();
+    botao.style.display = "none";
+    mudarEstado("falando");
+  } catch (erro) {  // navegador bloqueou o autoplay: precisa de um clique
+    mudarEstado("ocioso", "Resposta pronta");
+    botao.style.display = "block";
+  }
+}
+
+function medirVolume() {
+  if (!analisador || estado !== "falando") { nivel *= 0.9; return; }
+  analisador.getByteFrequencyData(dados);
+  let soma = 0;
+  for (let i = 2; i < 40; i++) soma += dados[i];          // faixa da voz (~170 Hz a 3,4 kHz)
+  const bruto = Math.min(1, (soma / (38 * 255)) * 1.8);
+  nivel += (bruto - nivel) * 0.35;
+}
+
+// ---- animação --------------------------------------------------------------
+function rgba(alfa) { return `rgba(${cor[0] | 0}, ${cor[1] | 0}, ${cor[2] | 0}, ${alfa})`; }
+
+let ultimo = performance.now();
+function quadro(agora) {
+  const dt = Math.min(0.05, (agora - ultimo) / 1000);
+  ultimo = agora; tempo += dt;
+  medirVolume();
+
+  const alvo = CORES[estado];  // a cor desliza até a do estado atual
+  for (let i = 0; i < 3; i++) cor[i] += (alvo[i] - cor[i]) * Math.min(1, dt * 3);
+
+  let taxa = DISPAROS_POR_SEG[estado] + (estado === "falando" ? nivel * 40 : 0);
+  if (REDUZIR) taxa *= 0.25;
+  acumulador += taxa * dt;
+  const entradas = nos.filter(n => n.camada === 0);
+  while (acumulador >= 1) { disparar(entradas[Math.floor(Math.random() * entradas.length)]); acumulador -= 1; }
+
+  const chance = CHANCE_PROPAGAR[estado] + (estado === "falando" ? nivel * 0.4 : 0);
+  const velocidade = estado === "pensando" ? 1.7 : 1;
+  pulsos = pulsos.filter(p => {
+    p.t += p.vel * velocidade * dt;
+    if (p.t < 1) return true;
+    p.lig.b.ativacao = 1;
+    if (Math.random() < chance) disparar(p.lig.b);
+    return false;
+  });
+  for (const n of nos) n.ativacao *= Math.exp(-dt * 3);
+
+  desenhar();
+  requestAnimationFrame(quadro);
+}
+
+function desenhar() {
+  ctx.clearRect(0, 0, largura, altura);
+
+  ctx.lineWidth = 1;  // ligações
+  ctx.strokeStyle = rgba(0.07 + nivel * 0.12);
+  ctx.beginPath();
+  for (const { a, b } of ligacoes) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+  ctx.stroke();
+
+  ctx.globalCompositeOperation = "lighter";
+  for (const p of pulsos) {  // sinais viajando, com rastro
+    const { a, b } = p.lig;
+    const t0 = Math.max(0, p.t - 0.18);
+    const x = a.x + (b.x - a.x) * p.t, y = a.y + (b.y - a.y) * p.t;
+    ctx.strokeStyle = rgba(0.55);
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.fillStyle = rgba(0.9);
+    ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI * 2); ctx.fill();
+  }
+
+  for (const n of nos) {  // neurônios: brilham quando um sinal chega e com o volume
+    const respiro = REDUZIR ? 0 : Math.sin(tempo * 1.6 + n.fase) * 0.6;
+    const raio = 3.6 + n.ativacao * 4 + nivel * 3 + respiro;
+    ctx.fillStyle = rgba(0.06 + n.ativacao * 0.22 + nivel * 0.08);
+    ctx.beginPath(); ctx.arc(n.x, n.y, raio * 3.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(0.35 + n.ativacao * 0.65);
+    ctx.beginPath(); ctx.arc(n.x, n.y, raio, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = "source-over";
+}
+
+// ---- início ----------------------------------------------------------------
+new ResizeObserver(montar).observe(canvas);
+montar();
+mudarEstado(estado);
+botao.addEventListener("click", tocar);
+
+if (CONFIG.audio) {
+  audio = new Audio("data:audio/mpeg;base64," + CONFIG.audio);
+  audio.addEventListener("ended", () => mudarEstado("ocioso"));
+  tocar();
+}
+requestAnimationFrame(quadro);
+</script>
+</body>
+</html>

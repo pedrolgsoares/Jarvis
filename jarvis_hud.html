@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --fundo: #070b0d;
+    --grade: rgba(0, 200, 240, .055);
+    --texto: #9fb4bd;
+    --ciano: #12c8f2;
+    --ok: #2fd6a0;
+  }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  #palco { position: relative; height: 100%; border-radius: 16px; overflow: hidden;
+    background-color: var(--fundo);
+    background-image:
+      linear-gradient(var(--grade) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grade) 1px, transparent 1px);
+    background-size: 28px 28px; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #titulo { position: absolute; left: 18px; top: 14px; margin: 0;
+    font: 600 15px/1 "Cascadia Mono", Consolas, monospace; letter-spacing: .32em; color: var(--ciano); }
+  #online { position: absolute; right: 18px; top: 14px; margin: 0; display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--texto); }
+  #online i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  #estado { position: absolute; left: 0; right: 0; margin: 0; text-align: center;
+    font-size: 13px; color: var(--texto); letter-spacing: .04em; }
+  #ouvir { position: absolute; right: 18px; bottom: 16px; display: none;
+    padding: 9px 18px; border: 0; border-radius: 999px; background: var(--ciano); color: #03181f;
+    font: 600 13px "Segoe UI", system-ui, sans-serif; cursor: pointer;
+    box-shadow: 0 0 18px rgba(18, 200, 242, .45); }
+  #ouvir:hover { filter: brightness(1.12); }
+  #ouvir:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+</style>
+</head>
+<body>
+<div id="palco">
+  <canvas id="hud" aria-hidden="true"></canvas>
+  <p id="titulo">J.A.R.V.I.S</p>
+  <p id="online"><i></i><span id="conexao">Online</span></p>
+  <p id="estado" role="status"></p>
+  <button id="ouvir" type="button">Ouvir resposta</button>
+</div>
+
+<script>
+const CONFIG = __CONFIG__;  // {estado: "ocioso"|"pensando"|"falando", audio: base64|null}
+
+// ---- aparência por estado -------------------------------------------------
+const CORES = { ocioso: [18, 200, 242], pensando: [240, 168, 58], falando: [110, 232, 255] };
+const ROTULOS = { ocioso: "Pronto", pensando: "Pensando…", falando: "Falando" };
+const ROTACAO = { ocioso: 0.35, pensando: 2.4, falando: 0.9 };          // rad/s do anel orbital
+const DISPAROS_POR_SEG = { ocioso: 1.1, pensando: 14, falando: 4 };     // falando soma o volume
+const REDUZIR = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const canvas = document.getElementById("hud");
+const ctx = canvas.getContext("2d");
+const rotulo = document.getElementById("estado");
+const botao = document.getElementById("ouvir");
+
+let L = 0, A = 0, cx = 0, cy = 0, R = 0;
+let estado = CONFIG.estado, nivel = 0, acumulador = 0, tempo = 0, giro = 0;
+const cor = CORES[estado].slice();
+
+function mudarEstado(novo, texto) {
+  estado = novo;
+  rotulo.textContent = texto || ROTULOS[novo];
+}
+
+// ---- mini rede neural dentro do orbe (coordenadas de -1 a 1) ----------------
+const NOS = [{ x: 0, y: 0 }];
+for (let i = 0; i < 5; i++) { const a = i / 5 * Math.PI * 2 - Math.PI / 2; NOS.push({ x: Math.cos(a) * 0.38, y: Math.sin(a) * 0.38 }); }
+for (let i = 0; i < 7; i++) { const a = (i + 0.5) / 7 * Math.PI * 2 - Math.PI / 2; NOS.push({ x: Math.cos(a) * 0.74, y: Math.sin(a) * 0.74 }); }
+NOS.forEach(n => { n.ativacao = 0; n.saidas = []; n.fase = Math.random() * 6.28; });
+const LIGACOES = [];
+for (const a of NOS) for (const b of NOS)
+  if (a !== b && Math.hypot(a.x - b.x, a.y - b.y) < 0.52) { const l = { a, b }; LIGACOES.push(l); a.saidas.push(l); }
+let pulsos = [];
+
+function disparar(no) {
+  if (!no.saidas.length) return;
+  pulsos.push({ lig: no.saidas[Math.floor(Math.random() * no.saidas.length)], t: 0, vel: 0.9 + Math.random() * 1.1 });
+}
+
+function montar() {
+  const dpr = window.devicePixelRatio || 1;
+  L = canvas.clientWidth; A = canvas.clientHeight;
+  canvas.width = L * dpr; canvas.height = A * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = L / 2; cy = A * 0.46; R = Math.min(L * 0.5, A) * 0.2;
+  rotulo.style.top = (cy + R * 1.75 + 14) + "px";
+}
+
+// ---- áudio: o volume real da fala comanda o HUD ------------------------------
+let audio = null, contexto = null, analisador = null, dados = null;
+
+function prepararAudio() {
+  if (contexto) return;
+  contexto = new (window.AudioContext || window.webkitAudioContext)();
+  const fonte = contexto.createMediaElementSource(audio);  // só pode ser criado uma vez
+  analisador = contexto.createAnalyser();
+  analisador.fftSize = 512;
+  analisador.smoothingTimeConstant = 0.65;
+  dados = new Uint8Array(analisador.frequencyBinCount);
+  fonte.connect(analisador);
+  analisador.connect(contexto.destination);
+}
+
+async function tocar() {
+  try {
+    prepararAudio();
+    await contexto.resume();
+    if (contexto.state !== "running") throw new Error("áudio bloqueado");
+    await audio.play();
+    botao.style.display = "none";
+    mudarEstado("falando");
+  } catch (erro) {  // navegador bloqueou o autoplay: precisa de um clique
+    mudarEstado("ocioso", "Resposta pronta");
+    botao.style.display = "block";
+  }
+}
+
+function medirVolume() {
+  if (!analisador || estado !== "falando") { nivel *= 0.9; return; }
+  analisador.getByteFrequencyData(dados);
+  let soma = 0;
+  for (let i = 2; i < 40; i++) soma += dados[i];          // faixa da voz (~170 Hz a 3,4 kHz)
+  const bruto = Math.min(1, (soma / (38 * 255)) * 1.8);
+  nivel += (bruto - nivel) * 0.35;
+}
+
+// ---- animação --------------------------------------------------------------
+const rgba = a => `rgba(${cor[0] | 0}, ${cor[1] | 0}, ${cor[2] | 0}, ${a})`;
+
+let ultimo = performance.now();
+function quadro(agora) {
+  const dt = Math.min(0.05, (agora - ultimo) / 1000);
+  ultimo = agora; tempo += dt;
+  medirVolume();
+
+  const alvo = CORES[estado];  // a cor desliza até a do estado atual
+  for (let i = 0; i < 3; i++) cor[i] += (alvo[i] - cor[i]) * Math.min(1, dt * 3);
+  giro += ROTACAO[estado] * (REDUZIR ? 0.2 : 1) * dt;
+
+  let taxa = DISPAROS_POR_SEG[estado] + (estado === "falando" ? nivel * 30 : 0);
+  if (REDUZIR) taxa *= 0.25;
+  acumulador += taxa * dt;
+  while (acumulador >= 1) { disparar(NOS[Math.floor(Math.random() * NOS.length)]); acumulador -= 1; }
+
+  const chance = estado === "pensando" ? 0.8 : 0.5;
+  pulsos = pulsos.filter(p => {
+    p.t += p.vel * (estado === "pensando" ? 1.6 : 1) * dt;
+    if (p.t < 1) return true;
+    p.lig.b.ativacao = 1;
+    if (Math.random() < chance) disparar(p.lig.b);
+    return false;
+  });
+  for (const n of NOS) n.ativacao *= Math.exp(-dt * 3);
+
+  desenhar();
+  requestAnimationFrame(quadro);
+}
+
+function desenhar() {
+  ctx.clearRect(0, 0, L, A);
+  const respiro = REDUZIR ? 0 : Math.sin(tempo * 1.4) * 0.5 + 0.5;
+
+  // brilho de fundo
+  const raioBrilho = R * (2.3 + nivel * 0.9);
+  const brilho = ctx.createRadialGradient(cx, cy, R * 0.8, cx, cy, raioBrilho);
+  brilho.addColorStop(0, rgba(0.30 + nivel * 0.25 + respiro * 0.05));
+  brilho.addColorStop(1, rgba(0));
+  ctx.fillStyle = brilho;
+  ctx.beginPath(); ctx.arc(cx, cy, raioBrilho, 0, Math.PI * 2); ctx.fill();
+
+  // espectro radial da voz (só quando fala)
+  if (estado === "falando" && analisador) {
+    const barras = 72;
+    ctx.lineCap = "round"; ctx.lineWidth = 2.2; ctx.strokeStyle = rgba(0.75);
+    ctx.beginPath();
+    for (let i = 0; i < barras; i++) {
+      const espelho = i < barras / 2 ? i : barras - 1 - i;           // simétrico: esquerda = direita
+      const valor = dados[2 + Math.floor(espelho / (barras / 2) * 36)] / 255;
+      const a = i / barras * Math.PI * 2 - Math.PI / 2;
+      const r0 = R * 1.12, r1 = r0 + 4 + valor * R * 0.55;
+      ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+      ctx.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+    }
+    ctx.stroke();
+  }
+
+  // disco externo escuro com borda luminosa
+  ctx.save();
+  ctx.shadowColor = rgba(0.9); ctx.shadowBlur = 22 + nivel * 26;
+  ctx.fillStyle = "#050d11";
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = rgba(0.18); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+
+  // disco interno
+  const ri = R * 0.76;
+  const miolo = ctx.createRadialGradient(cx, cy, 0, cx, cy, ri);
+  miolo.addColorStop(0, rgba(0.30 + nivel * 0.2));
+  miolo.addColorStop(1, rgba(0.10));
+  ctx.fillStyle = miolo;
+  ctx.beginPath(); ctx.arc(cx, cy, ri, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = rgba(0.55); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(cx, cy, ri, 0, Math.PI * 2); ctx.stroke();
+
+  // mini rede neural
+  const k = ri * 0.82, px = n => cx + n.x * k, py = n => cy + n.y * k;
+  ctx.lineWidth = 1; ctx.strokeStyle = rgba(0.22);
+  ctx.beginPath();
+  for (const { a, b } of LIGACOES) { ctx.moveTo(px(a), py(a)); ctx.lineTo(px(b), py(b)); }
+  ctx.stroke();
+
+  ctx.globalCompositeOperation = "lighter";
+  for (const p of pulsos) {
+    const { a, b } = p.lig, t0 = Math.max(0, p.t - 0.25);
+    const x = px(a) + (px(b) - px(a)) * p.t, y = py(a) + (py(b) - py(a)) * p.t;
+    ctx.strokeStyle = rgba(0.8); ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(px(a) + (px(b) - px(a)) * t0, py(a) + (py(b) - py(a)) * t0);
+    ctx.lineTo(x, y); ctx.stroke();
+  }
+  for (const n of NOS) {
+    const raio = 2.2 + n.ativacao * 2.6 + nivel * 1.5 + (REDUZIR ? 0 : Math.sin(tempo * 2 + n.fase) * 0.3);
+    ctx.fillStyle = rgba(0.12 + n.ativacao * 0.4);
+    ctx.beginPath(); ctx.arc(px(n), py(n), raio * 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(0.55 + n.ativacao * 0.45);
+    ctx.beginPath(); ctx.arc(px(n), py(n), raio, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = "source-over";
+
+  // anel orbital com 4 pontos
+  const ro = R * 1.38;
+  ctx.strokeStyle = rgba(0.30); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, ro, 0, Math.PI * 2); ctx.stroke();
+  ctx.save();
+  ctx.shadowColor = rgba(1); ctx.shadowBlur = 10; ctx.fillStyle = rgba(1);
+  for (let i = 0; i < 4; i++) {
+    const a = giro + i * Math.PI / 2;
+    ctx.beginPath(); ctx.arc(cx + Math.cos(a) * ro, cy + Math.sin(a) * ro, 2.6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---- início ----------------------------------------------------------------
+new ResizeObserver(montar).observe(canvas);
+montar();
+mudarEstado(estado);
+botao.addEventListener("click", tocar);
+
+if (CONFIG.audio) {
+  audio = new Audio("data:audio/mpeg;base64," + CONFIG.audio);
+  audio.addEventListener("ended", () => mudarEstado("ocioso"));
+  tocar();
+}
+requestAnimationFrame(quadro);
+</script>
+</body>
+</html>

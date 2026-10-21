@@ -1,0 +1,33 @@
+{
+  "oi": [
+    "Olá!",
+    "Oi! Tudo bem?",
+    "E aí!"
+  ],
+  "ola": [
+    "Olá!",
+    "Oi, tudo bem?"
+  ],
+  "bom dia": [
+    "Bom dia! Pronto para mais um dia de código?"
+  ],
+  "boa noite": [
+    "Boa noite! Não vá virar a madrugada programando."
+  ],
+  "tudo bem": [
+    "Tudo ótimo por aqui, e com você?"
+  ],
+  "quem e voce": [
+    "Sou a Jarvis, um chatbot que aprende com o que você me ensina."
+  ],
+  "qual e o seu nome": [
+    "Jarvis. Pode me chamar assim."
+  ],
+  "o que voce faz": [
+    "Converso e aprendo frases novas com você."
+  ],
+  "obrigado": [
+    "De nada!",
+    "Disponha!"
+  ]
+}
